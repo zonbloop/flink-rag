@@ -5,6 +5,7 @@ target/
 jars/
 .env
 batch/
+resources/
 ### IntelliJ IDEA ###
 .idea/modules.xml
 .idea/jarRepositories.xml
