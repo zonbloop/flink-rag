@@ -1,0 +1,128 @@
+version: '3.8'
+services:
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    container_name: zookeeper-1
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    ports:
+      - "2181:2181"
+    networks:
+      - flink-network
+  kafka:
+    image: bitnami/kafka:3.4
+    container_name: kafka
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      - KAFKA_BROKER_ID=1
+
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:29092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://host.docker.internal:9092,INTERNAL://kafka:29092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper-1:2181
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CFG_DEFAULT_REPLICATION_FACTOR=1
+      - KAFKA_CFG_MIN_INSYNC_REPLICAS=1
+      - KAFKA_CFG_LOG_CLEANER_ENABLE=true
+      - KAFKA_CFG_LOG_CLEANER_THREADS=2
+      - KAFKA_CFG_LOG_CLEANER_BACKOFF_MS=15000
+      - KAFKA_CFG_LOG_CLEANER_MIN_CLEANABLE_RATIO=0.01
+      - KAFKA_CFG_SEGMENT_BYTES=1048576
+      - KAFKA_CFG_SEGMENT_MS=60000
+
+    depends_on:
+      zookeeper:
+        condition: service_started
+    networks:
+      - flink-network
+
+  opensearch-node1:
+    image: opensearchproject/opensearch:3.0.0
+    container_name: opensearch-node1
+    environment:
+      - DISABLE_SECURITY_PLUGIN=true
+      - discovery.type=single-node 
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
+    ulimits:                    # stop the JVM from swapping
+      memlock: {soft: -1, hard: -1}
+      nofile:  {soft: 65536, hard: 65536}
+    volumes:
+      - opensearch-data1:/usr/share/opensearch/data
+    ports:
+      - 9200:9200      # REST / HTTPS
+      - 9600:9600
+    networks:
+      - flink-network
+
+  dashboards:
+    image: opensearchproject/opensearch-dashboards:3.0.0
+    container_name: opensearch-dashboards
+    depends_on:
+      - opensearch-node1
+    ports:
+      - "5601:5601"
+    environment:
+      - OPENSEARCH_HOSTS=["http://opensearch-node1:9200"]
+      - OPENSEARCH_USERNAME=admin
+      - OPENSEARCH_PASSWORD=${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
+      - DISABLE_SECURITY_DASHBOARDS_PLUGIN=true
+    networks:
+      - flink-network
+
+  # Flink
+  jobmanager:
+    #image: flink:1.18.1-scala_2.12-java11
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jobmanager
+    ports:
+      - "8089:8081"
+    command: jobmanager
+    environment:
+      OPENSEARCH_HOSTS: "http://opensearch-node1:9200"
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      FLINK_ROLE: jobmanager
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      KAFKA_CFG_MIN_INSYNC_REPLICAS: 1
+    volumes:
+      - ./jobs:/opt/flink/jobs
+    networks:
+      - flink-network
+
+  taskmanager:
+    #image: flink:1.18.1-scala_2.12-java11
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      - jobmanager
+    command: taskmanager
+    environment:
+      OPENSEARCH_HOSTS: "http://opensearch-node1:9200"
+      OPENSEARCH_USERNAME: admin
+      OPENSEARCH_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      FLINK_ROLE: taskmanager
+      JOB_MANAGER_RPC_ADDRESS: jobmanager
+      KAFKA_CFG_MIN_INSYNC_REPLICAS: 1
+    volumes:
+      - ./jobs:/opt/flink/jobs
+    networks:
+      - flink-network
+    deploy:
+      replicas: 3
+
+volumes:
+  opensearch-data1:
+
+networks:
+  flink-network:
+    driver: bridge
